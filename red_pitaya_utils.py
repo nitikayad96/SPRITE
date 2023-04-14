@@ -1,10 +1,72 @@
 import time
 import datetime
 import numpy as np
+import struct
+import casperfpga
+import sys
 
 from astropy.time import Time
 from astropy import units as u
 from astropy.coordinates import EarthLocation, SkyCoord, AltAz
+
+#################################################################################################################
+# INITIALIZE RED PITAYA (USEFUL FOR CASE OF POWER CYCLE)
+#################################################################################################################
+def init_rp(bof = 'firmware/loberotator_final_2022-07-14_1419.fpg'):
+    """
+    Initialize BRAM and required registers for Red Pitaya - need to do this every time board is power cycled
+    :param bof: firmware file used to program FPGA - should be either .bof or .fpg
+    """
+    # connect to board
+    rp = casperfpga.CasperFpga('rp-f07179.ovro.pvt')
+
+    # program board with bof file
+    rp.upload_to_ram_and_program(bof)
+
+    # check that board is running
+    print(rp.is_running())
+    print(rp.is_connected())
+
+    # program bram with values of sin and cos
+    N = 2 ** 11
+    n = np.arange(N) / float(N - 1)
+
+    bram_dict = {'sin': np.sin(2 * np.pi * n), 'cos': np.cos(2 * np.pi * n)}
+    bram_32b = {}
+
+    for key in bram_dict.keys():
+
+        scaled_sig_32b = np.empty(N)
+
+        sig = bram_dict[key]
+        for i in range(len(sig)):
+            scaled_sig_32b[i] = sig[i] * (2 ** 31) - 1
+
+        vals_32b = scaled_sig_32b.astype(int)
+
+        # iterate through all values, pack them as hex data and write each word to correct bram address
+        bram_name = 'bram_%s_phi' % key
+
+        for j in range(2048):
+            buf_val = struct.pack('>1i', vals_32b[j])
+            rp.write(bram_name, buf_val, 4 * j)
+
+        # read back from bram to ensure this worked properly
+        bram_32b[key] = np.array(struct.unpack('>2048i', rp.read(bram_name, 2048 * 4, 0)))
+
+    rp.write_int('phi_init', 0 * (2 ** 32))
+    rp.write_int('phi_step', int(4e-9 * (2 ** 31)))
+
+    delay = 0.46  # rad
+    c1 = -1 / np.sin(delay)
+    c2 = np.cos(delay) / np.sin(delay)
+
+    rp.write_int('c1', int(c1 * (2 ** 14)))
+    rp.write_int('c2', int(c2 * (2 ** 14)))
+
+    rp.write_int('reg_cntrl', 1)
+    rp.write_int('reg_cntrl', 0)
+
 
 #################################################################################################################
 # CALCULATE LOBE ROTATION RATE FOR ADJUSTING VALUES IN RED PITAYA
