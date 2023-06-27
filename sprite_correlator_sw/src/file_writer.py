@@ -64,14 +64,15 @@ class H5Writer(object):
                     self.ant_locs[i] = ant['loc']
         self.array_loc = [self.config['Array']['lat'], self.config['Array']['lon']]
 
-    def start_new_file(self,name):
+    def start_new_file(self,name,data_path):
         """
         Close the current file if necessary, and start a new one with the provided name.
         """
         # close old file if necessary
         if self.fh is not None:
             self.close_file()
-        self.fh = h5py.File(self.data_path+'/'+name,'w')
+        self.fh = h5py.File(data_path + '/' + name, 'w')
+        #self.fh = h5py.File(self.data_path+'/'+name,'w')
         self.write_fixed_attributes()
         self.datasets = {}
         self.datasets_index = {}
@@ -90,6 +91,15 @@ class H5Writer(object):
         self.RA = ra
         self.Dec = dec
 
+    def set_metadata(self,band,track,purpose):
+        """
+        Set the metadata
+        """
+        self.band = band
+        self.track = track
+        self.purpose = purpose
+
+    
     def set_fringe_rates(self, actual, rp):
         """
         Set the actual fringe rate and red pitaya fringe rate in Hz,
@@ -118,6 +128,7 @@ class H5Writer(object):
         self.fh.attrs['n_ants'] = self.n_ants
         self.fh.create_dataset('bl_order',shape=[self.n_bls,2],dtype=int,data=self.bl_order)
         self.fh.attrs['source'] = [self.source_name,self.RA,self.Dec]
+        self.fh.attrs['metadata'] = [self.band,self.track,self.purpose]
         self.fh.attrs['fringe'] = [self.fringe_rate_actual,self.fringe_rate_rp]
         self.fh.attrs['center_freq'] = self.center_freq
         self.fh.attrs['bandwidth'] = self.bandwidth

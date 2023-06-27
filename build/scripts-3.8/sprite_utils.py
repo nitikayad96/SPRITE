@@ -191,6 +191,43 @@ def cat_to_dict(catalog_file):
 
     return cal_dict, target_dict
 
+
+def find_closest_cal(target_coords, cal_dict, print_cals=False):
+    """
+    Takes an input astropy SkyCoords object and looks through a given calibrator dictionary to identify \
+    the nearest source to use as a calibrator. You can use the "cat_to_dict" function to create the dict \
+    In the event that the source itself if in the calibrator dictionary, it will select the next nearest \
+    source.
+    :param target_coords: astropy SkyCoords object for target source
+    :param cal_dict: dict of all calibrators
+    :param print_cals: if True, the function will print the source name and separation distance
+    :return: name of source located at smallest separation from target
+    :rtype: str
+    """
+
+    seps = []
+
+    for key in cal_dict:
+
+        cal_coords = cal_dict[key]
+
+        sep = target_coords.separation(cal_coords).value
+
+        # allow observations with check sources to have a calibrator source
+        # other than themselves
+        if sep < 0.01:
+            seps.append(np.inf)
+        else:
+            seps.append(sep)
+
+    idx = np.argmin(seps)
+    cal_source = list(cal_dict.keys())[idx]
+    if print_cals:
+        print('Best Calibrator: %s' % cal_source)
+        print('Separation: %f degrees' % seps[idx])
+
+    return cal_source
+
 def cat_to_df(catalog_file):
     """
     Takes a calibrator file used with the COMAP control system and creates a pandas dataframe containing RA and Dec \
@@ -345,7 +382,6 @@ def parse_schedule(sched_file, catalog_file):
             elif duration[-1] == 'h':
                 obslen = 3600 * float(duration[:-1])
 
-        # TODO: edit so that cal scans only get added if obs type == "observe_source"
         elif 'pointing_scan' in line:
             _, source_name, start_time, offset, step_size = line.split(' ')
 
@@ -445,7 +481,7 @@ def advance_sched(sched, ref_date):
     for sch_row in sched:
         source_name, start_time, ra, dec, duration = sch_row
 
-        start_time_new = start_time - n_days * 3.9318 * u.min
+        start_time_new = start_time - n_days * 3.93 * u.min
 
         while start_time_new < Time.now():
             start_time_new = start_time_new + 1 * u.day
@@ -453,65 +489,6 @@ def advance_sched(sched, ref_date):
         adv_sch.append([source_name, start_time_new, ra, dec, duration])
 
     return np.array(adv_sch)
-
-def find_closest_cal(target_coords, cal_dict, print_cals=False):
-    """
-    Takes an input astropy SkyCoords object and looks through a given calibrator dictionary to identify \
-    the nearest source to use as a calibrator. You can use the "cat_to_dict" function to create the dict \
-    In the event that the source itself if in the calibrator dictionary, it will select the next nearest \
-    source.
-    :param target_coords: astropy SkyCoords object for target source
-    :param cal_dict: dict of all calibrators
-    :param print_cals: if True, the function will print the source name and separation distance
-    :return: name of source located at smallest separation from target
-    :rtype: str
-    """
-
-    seps = []
-
-    for key in cal_dict:
-
-        cal_coords = cal_dict[key]
-
-        sep = target_coords.separation(cal_coords).value
-
-        # allow observations with check sources to have a calibrator source
-        # other than themselves
-        if sep < 0.01:
-            seps.append(np.inf)
-        else:
-            seps.append(sep)
-
-    idx = np.argmin(seps)
-    cal_source = list(cal_dict.keys())[idx]
-    if print_cals:
-        print('Best Calibrator: %s' % cal_source)
-        print('Separation: %f degrees' % seps[idx])
-
-    return cal_source
-
-def get_altaz(src_coords, time):
-
-    if type(src_coords) == list:
-        ra, dec = src_coords
-        src = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-    elif 'SkyCoord' in str(type(src_coords)):
-        src = src_coords
-    else:
-        raise Exception("Unrecognized input type for src_coords")
-
-    altaz_frame = AltAz(obstime=time, location=OVRO)
-    altaz = src.transform_to(altaz_frame)
-    alt, az = altaz.alt.value, altaz.az.value
-    return alt, az
-
-
-def az_crossing(az_src, az_cal):
-
-    cross = ((np.cos(np.deg2rad(az_src)) > 0) & (np.cos(np.deg2rad(az_cal)) > 0) &
-             (np.sign(np.sin(np.deg2rad(az_src))) != np.sign(np.sin(np.deg2rad(az_cal)))))
-
-    return cross
 
 
 def add_cal_scans(sch_row, cal_dict, target_dict):
@@ -541,69 +518,52 @@ def add_cal_scans(sch_row, cal_dict, target_dict):
     else:
 
         if duration <= 60 * 5:
-            raise Exception('Science or check source %s must be observed for at ' %source_name +
-                            'least 5 minutes to leave enough time for calibrator scans')
+            raise Exception('Science or check source %s must be observed for at least 5 minutes to leave enough time '+
+                            'for calibrator scans'%source_name)
 
-        coords = SkyCoord(ra, dec, unit=(u.hourangle, u.deg))
-        cal_source = find_closest_cal(coords, cal_dict, print_cals=False)
+        try:
+            cal_source = find_closest_cal(target_dict[source_name], cal_dict, print_cals=False)
 
-        # try:
-        #     cal_source = find_closest_cal(target_dict[source_name], cal_dict, print_cals=False)
-        #
-        # except:
-        #     cal_source = find_closest_cal(cal_dict[source_name], cal_dict, print_cals=False)
+        except:
+            cal_source = find_closest_cal(cal_dict[source_name], cal_dict, print_cals=False)
 
         cal_ra, cal_dec = cal_dict[cal_source].to_string('hmsdms').split(' ')
+
+
         cal_ra = cal_ra[:-1]
         cal_dec = cal_dec[:-1]
         for sym in ['h', 'd', 'm']:
            cal_ra = cal_ra.replace(sym, ':')
            cal_dec = cal_dec.replace(sym, ':')
 
-        # check that source and calibrator are not on opposite sides of the 360 azimuth line
-        times = start_time + np.linspace(0,duration,5000) * u.s
-        _, az_src = get_altaz(coords, times)
-        _, az_cal = get_altaz([cal_ra, cal_dec], times)
-        idx = np.argwhere(az_crossing(az_src, az_cal))
-
-        if len(idx) > 0:
-            t1 = times[idx[0]][0]
-            t2 = times[idx[-1]][0]
-            raise Exception('Switching between target %s and nearest calibrator %s '%(source_name, cal_source) +
-                            'not possible between times %s and %s '%(t1,t2) +
-                            'due to need for telescope to unwrap to cross between 0 and 360 degrees of azimuth' )
-
-        slew_mins = 1.5
-        cyc_mins = 10 + 1 + 2*slew_mins
-
-        if duration < 60 * cyc_mins:
+        if duration < 60 * 13:
 
             t = start_time
 
-            duration_target = duration - ((1+slew_mins) * 60)
+            duration_target = duration - (2 * 60)
 
             new_sched.append([source_name, t, ra, dec, duration_target, track, 'science'])
-            t = t + duration_target * u.second + (1+slew_mins) * u.min
+            t = t + duration_target * u.second + 1 * u.min
             new_sched.append([cal_source, t, cal_ra, cal_dec, 1 * 60, track, 'gain'])
 
 
         else:
 
-            ncyc = int(duration / (60 * cyc_mins))
+            ncyc = int(duration / (60 * 13))
 
             t = start_time
             for i in range(ncyc):
                 new_sched.append([source_name, t, ra, dec, 10 * 60, track, 'science'])
-                t = t + (10+slew_mins) * u.min
+                t = t + 11 * u.min
                 new_sched.append([cal_source, t, cal_ra, cal_dec, 1 * 60, track, 'gain'])
-                t = t + (1+slew_mins) * u.min
+                t = t + 2 * u.min
 
-            remain = duration - ncyc * (60 * cyc_mins)
+            remain = duration - ncyc * (60 * 13)
             new_sched.append([source_name, t, cal_ra, cal_dec, remain, track, 'science'])
 
     return np.array(new_sched)
 
-def get_full_schedule(sched_file, catalog_file, check_src_alt=True, cal_sources=True):
+def get_full_schedule(sched_file, catalog_file, check_src_alt=True):
     """
     Given a SPRITE schedule file and a source catalog file, create a list of observation details for each source to be \
     passed to the correlator code. Each row in the output array will contain the source name, start time, RA, Dec, and \
@@ -632,39 +592,30 @@ def get_full_schedule(sched_file, catalog_file, check_src_alt=True, cal_sources=
     cal_dict, target_dict = cat_to_dict(catalog_file)
     full_sched = np.array([]).reshape(0, 7)
 
-    if cal_sources:
-        for sch_row in new_sched:
-                sch_row_full = add_cal_scans(sch_row, cal_dict, target_dict)
-                full_sched = np.concatenate((full_sched, sch_row_full), axis=0)
+    for sch_row in new_sched:
+        sch_row_full = add_cal_scans(sch_row, cal_dict, target_dict)
+        full_sched = np.concatenate((full_sched, sch_row_full), axis=0)
 
-        split_path = sched_file.split(os.sep)
-        filebase, ext = split_path[-1].split('.')
-        split_path[-1] = filebase + '_full.' + ext
-        full_sched_file = os.sep.join(split_path)
+    split_path = sched_file.split(os.sep)
+    filebase, ext = split_path[-1].split('.')
+    split_path[-1] = filebase + '_full.' + ext
+    full_sched_file = os.sep.join(split_path)
 
-        lines = []
-        lines.append('import /home/comap/nyadlapa/schedules/spriteSchedLib.sch\n')
-        lines.append('catalog /home/comap/sprite_source_catalog.cat\n\n')
+    lines = []
+    lines.append('import /home/comap/nyadlapa/schedules/spriteSchedLib.sch\n')
+    lines.append('catalog /home/comap/sprite_source_catalog.cat\n\n')
 
-        command = 'observe_source'
-        for row in full_sched:
-            source, time, ra, dec, duration, track, purpose = row
-            start_time = str(time).split(' ')[1][:8]
-            duration = int(duration)
-            lines.append('%s %s, %s, %ds\n' % (command, source, start_time, duration))
+    command = 'observe_source'
+    for row in full_sched:
+        source, time, ra, dec, duration, track, purpose = row
+        start_time = str(time).split(' ')[1][:8]
+        duration = int(duration)
+        lines.append('%s %s, %s, %ds\n' % (command, source, start_time, duration))
 
-        lines.append('stow\n')
+    lines.append('stow\n')
 
-        with open(full_sched_file, 'w') as f:
-            f.writelines(lines)
-
-    else:
-        for sch_row in new_sched:
-            source, start_time, ra, dec, duration = sch_row
-            sch_row_full = np.array([[source, start_time, ra, dec, duration, source, 'science']])
-            full_sched = np.concatenate((full_sched, sch_row_full))
-
-        full_sched_file = sched_file
+    with open(full_sched_file, 'w') as f:
+        f.writelines(lines)
 
     cmd = 'scp %s comapc2:nyadlapa/schedules/.' %(full_sched_file)
 

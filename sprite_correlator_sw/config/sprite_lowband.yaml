@@ -28,7 +28,7 @@ Configuration:
                 qdr_tvg: no
                 vacc_tvg: no
             acc_len: 152588
-            data_path: /home/sprite/data/lowband
+            data_path: /mnt/data/lowband #/home/sprite/data/lowband
 
 XEngine:
     n_chans: 2048

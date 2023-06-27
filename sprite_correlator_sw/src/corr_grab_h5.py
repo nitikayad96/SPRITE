@@ -21,10 +21,10 @@ from red_pitaya_utils import calc_phi_step, calc_rp_error
 
 logger = helpers.add_default_log_handlers(logging.getLogger(__name__))
 
-def write_data(writer, d, timestamp):
+def write_data(writer, d, timestamp, mytime):
     writer.append_data('xeng_raw0', d.shape, d, np.int64)
-    writer.append_data('timestamp0', [1], timestamp, np.int64)
-    writer.append_data('timestamp_UTC', [1], time.time(), float)
+    writer.append_data('timestamp0', [1], timestamp, float)
+    writer.append_data('timestamp_UTC', [1], mytime, float)
 
 def signal_handler(signum, frame):
     """
@@ -64,8 +64,12 @@ if __name__ == '__main__':
     ra = args[2]
     dec = args[3]
     obslen = float(args[4])
+    track = args[5] # name of target source in track
+    purpose = args[6] # one of [science,gain,bandpass,flux]
+    data_path = args[7]
 
-    if len(args) == 6 and args[5] == 'rp':
+
+    if len(args) == 9 and args[8] == 'rp':
         switch_rp = True
 
     else:
@@ -84,7 +88,8 @@ if __name__ == '__main__':
     bl_order = [[0,0], [1,1], [0,1]]
     writer.set_bl_order(bl_order)
     writer.set_source_details(src_name, ra, dec)
-
+    writer.set_metadata(band, track, purpose)
+    
     ############## Initialize red pitaya values ########################
 
     t = Time.now()
@@ -96,10 +101,9 @@ if __name__ == '__main__':
 
     if switch_rp:
         rp = casperfpga.CasperFpga('rp-f07179.ovro.pvt')
-
         phi_step_32b = round(phi_step_list[0] * (2 ** 31))
-        rp.write_int('phi_step', phi_step_32b)
-        rp.write_int('phi_init', 0 * (2 ** 32))
+        rp.write_int('phi_step', round(0))
+        #rp.write_int('phi_init', 0 * (2 ** 32))
 
     ################ Inilatize correlator values #######################
     corr = AMI.spriteSbl(config_file=config_file) #passive=True)
@@ -125,25 +129,30 @@ if __name__ == '__main__':
 
     if current_obs is None:
         fname = 'corr_TEST_%d.h5'%(time.time())
-        writer.start_new_file(fname)
+        writer.start_new_file(fname,data_path)
         current_obs = 'test'
 
     # start at reasonable time
     pause.until(now+delt)
+    if switch_rp:
+        rp.write_int('phi_init', 0 * (2 ** 32))
+
     mcnt_old = xeng.read_uint('mcnt_lsb')
 
     while cnt<int(obslen/(50000.*8.192e-6)):
 
         mcnt = xeng.read_uint('mcnt_lsb')
         if mcnt != mcnt_old:
+            mytime = time.time()
             mcnt_old = mcnt            
             ps_idx = (cnt+1)%4
             if switch_rp:
                 rp.write_int('phi_init', ps[ps_idx] * (2 ** 32))
-                print(ps_idx)
+                if cnt==0:
+                    rp.write_int('reg_cntrl', 1)
+                    rp.write_int('reg_cntrl', 0)
+                    rp.write_int('phi_step', phi_step_32b)                
             d = corr.snap_corr_wide(wait=False,combine_complex=False)
-
-            
 
             cnt += 1
 
@@ -152,13 +161,14 @@ if __name__ == '__main__':
                 datavec[:,1,0,1] = d['corr11']
                 datavec[:,2,0,1] = d['corr01'][0:2048] #datavec[:,:,:,1] should be real
                 datavec[:,2,0,0] = d['corr01'][2048:] #datavec[:,:,:,0] should be imag
-                print("got new correlator data from %s band with timestamp %.4f at time %.4f"%(band, d['timestamp'], time.time()))
-                write_data(writer, datavec, d['timestamp'])
+                print("got new correlator data from %s band with timestamp %.4f at time %.4f"%(band, mytime, time.time()))
+                write_data(writer, datavec, d['timestamp'], mytime)
                 d_old = d
+                t_old = mytime
                 datavec_old = datavec
 
             else:
-                write_data(writer, datavec_old, d_old['timestamp'])
+                write_data(writer, datavec_old, d_old['timestamp'], t_old)
                 print("Failed to send because MCNT changed during snap")
 
         time.sleep(0.01)

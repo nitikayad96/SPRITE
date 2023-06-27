@@ -1,4 +1,6 @@
 import sprite_utils as su
+import sys
+import time
 
 if __name__ == "__main__":
 

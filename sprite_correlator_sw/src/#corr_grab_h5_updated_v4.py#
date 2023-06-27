@@ -17,8 +17,9 @@ import datetime
 from astropy.time import Time
 import pause
 
-sys.path.append('/home/sprite/loberotator')
-import update_phi_rate as fs # fringe stopping
+
+sys.path.append('/home/sprite/nitika/loberotator')
+from update_phi_rate_test import calc_phi_step, calc_rp_error # fringe stopping
 
 logger = helpers.add_default_log_handlers(logging.getLogger(__name__))
 
@@ -41,6 +42,7 @@ def signal_handler(signum, frame):
 
 
 if __name__ == '__main__':
+
     from optparse import OptionParser
 
     # set clock
@@ -64,6 +66,10 @@ if __name__ == '__main__':
     ra = args[2]
     dec = args[3]
     obslen = float(args[4])
+    track = args[5] # name of target source in track
+    purpose = args[6] # one of [science,gain,bandpass,flux]
+    
+    
 
     if len(args) == 6 and args[5] == 'rp':
         switch_rp = True
@@ -84,14 +90,17 @@ if __name__ == '__main__':
     bl_order = [[0,0], [1,1], [0,1]]
     writer.set_bl_order(bl_order)
     writer.set_source_details(src_name, ra, dec)
+    writer.set_metadata(band, track, purpose)
 
     ############## Initialize red pitaya values ########################
 
     t = Time.now()
     t.format='isot'
     start_utc = t.value
-    phi_step_list = fs.calc_phi_step(ra, dec, start_utc, 2, 1)
-    actual_phi_rate, rp_phi_rate = fs.calc_rp_error(phi_step_list)
+    phi_step_list = calc_phi_step(ra, dec, start_utc, 2, 1)
+    actual_phi_rate, rp_phi_rate = calc_rp_error(phi_step_list)
+    print('Actual rate: ',actual_phi_rate)
+    #actual_phi_rate, rp_phi_rate = fs.calc_rp_error(phi_step_list)
     writer.set_fringe_rates(actual_phi_rate[0], rp_phi_rate[0])
 
     if switch_rp:
@@ -101,11 +110,6 @@ if __name__ == '__main__':
         rp.write_int('phi_step', phi_step_32b)
         rp.write_int('phi_init', 0 * (2 ** 32))
 
-
-
-
-
-        
     ################ Inilatize correlator values #######################
     corr = AMI.spriteSbl(config_file=config_file) #passive=True)
     time.sleep(0.1)
@@ -136,7 +140,7 @@ if __name__ == '__main__':
     # start at reasonable time
     pause.until(now+delt)
     mcnt_old = xeng.read_uint('mcnt_lsb')
-    
+
     while cnt<int(obslen/(50000.*8.192e-6)):
 
         mcnt = xeng.read_uint('mcnt_lsb')
